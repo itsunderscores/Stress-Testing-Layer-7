@@ -1,5 +1,5 @@
 <h1>How to Use</h1><br>
-<code>./main [host/url] [threads] [timeout in seconds] [proxy list]</code>
+<code>./main [host/url] [threads] [timeout in seconds] [proxy list (optional)]</code>
 <br><br>
 I've used this script to test DDoS Attacks against my server. It uses HTTP/HTTPS proxies only.
 <hr>
